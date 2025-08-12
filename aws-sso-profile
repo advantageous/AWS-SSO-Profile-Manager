@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+TOOL_NAME="AWS-SSO-Profile-Manager"
+TOOL_VERSION="0.1.0"
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "aws-sso-profile ${TOOL_VERSION}"
+  exit 0
+fi
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_help
+  exit 0
+fi
+
+# XDG defaults
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+: "${XDG_CACHE_HOME:=$HOME/.cache}"
+
+# Default paths (may be overridden by flag/env)
+DEFAULT_PROFILE_FILE="$XDG_CONFIG_HOME/$TOOL_NAME/sessions.yaml"
+DEFAULT_CONFIG_FILE="$HOME/.aws/config"
+
+ACCOUNT_PAGE_SIZE=10
+ROLE_PAGE_SIZE=10
+TEMP_DIR="${XDG_CACHE_HOME}/${TOOL_NAME}"   # tidy temp/cache location
+mkdir -p "$TEMP_DIR"
+
+# Globals used by trap cleanup
+temp_output_file=""
+accounts_file=""
+roles_file=""
+configure_from_file=""
+configure_force_overwrite=""
+configure_non_interactive=""
+dry_run=""
+
+show_help() {
+  echo "Usage: $0 <command> [options]"
+  echo
+  echo "Commands:"
+  echo "  configure [options]        Configure SSO session"
+  echo "  generate [options]         Generate AWS SSO profiles"
+  echo "  clear [options]            Clear profiles for a given sso session"
+  echo "  list [options]             List available sso sessions"
+  echo "  help                       Show this help message"
+  echo
+  echo "Options:"
+  echo "  [--sso-session <value>]    SSO session key to operate on (default: all)"
+  echo "  [--config-file <path>]     Sessions YAML (default: $DEFAULT_PROFILE_FILE)"
+  echo "  [--output-file <path>]     AWS config to write (default: $DEFAULT_CONFIG_FILE)"
+  echo "  [--import-file <path>]     Source sessions YAML (import-all for configure; session source for generate/list)"
+  echo "  [--force]                  Overwrite without prompting (applies to configure/generate where relevant)"
+  echo "  [--non-interactive]        No prompts; fail on conflicts or missing data"
+  echo "  [--dry-run]                Show what would be done without writing changes"
+  echo
+  echo "Env overrides:"
+  echo "  AWS_SSO_PROFILES_CONFIG    Sets the sessions YAML path (overridden by --config-file)"
+}
+
+list() {
+  local src
+  if [[ -n "${configure_from_file:-}" ]]; then
+    src="$configure_from_file"
+  else
+    src="$profile_file"
+  fi
+  [[ -f "$src" ]] || { echo "No sessions."; return 0; }
+  yq eval 'keys | .[]' "$src"
+}
+
+set_start_and_end_lines() {
+  start_line="### [START] configure-profiles.sh for $1"
+  end_line="### [END] configure-profiles.sh for $1"
+}
+
+# Escape special characters for use in sed patterns
+escape_for_sed() {
+  # cover [],\,.,^,$,*,/, and also |?()+{}
+  printf '%s\n' "$1" | sed -e 's/[][\\.^$*/]/\\&/g' -e 's/[|?()+{}]/\\&/g'
+}
+
+extract_flags() {
+  shift
+  : "${sso_session:=}"
+  : "${output_file:=}"
+  : "${profile_file:=}"
+  : "${configure_from_file:=}"
+  : "${configure_force_overwrite:=}"
+  : "${configure_non_interactive:=}"
+  : "${dry_run:=}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --sso-session) sso_session="${2:?missing value for --sso-session}"; shift 2 ;;
+      --output-file) output_file="${2:?missing value for --output-file}"; shift 2 ;;
+      --config-file) profile_file="${2:?missing value for --config-file}"; shift 2 ;;
+      --import-file) configure_from_file="${2:?missing value for --import-file}"; shift 2 ;;
+      --force) configure_force_overwrite=1; shift ;;
+      --non-interactive) configure_non_interactive=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+  done
+
+  # Precedence: flag > env > default
+  if [[ -z "${profile_file:-}" ]]; then
+    if [[ -n "${AWS_SSO_PROFILES_CONFIG:-}" ]]; then
+      profile_file="$AWS_SSO_PROFILES_CONFIG"
+    else
+      profile_file="$DEFAULT_PROFILE_FILE"
+    fi
+  fi
+
+  output_file="${output_file:-$DEFAULT_CONFIG_FILE}"
+
+  # Ensure parent dirs exist for files we will write
+  mkdir -p "$(dirname "$profile_file")"
+  mkdir -p "$(dirname "$output_file")"
+}
+
+clear() {
+  set_start_and_end_lines "$1"
+  if [[ -f "$output_file" ]]; then
+    echo "Removing config for $1"
+    start_pattern=$(escape_for_sed "$start_line")
+    end_pattern=$(escape_for_sed "$end_line")
+    if [[ "$(uname)" == "Darwin" ]]; then
+      sed -i '' "/$start_pattern/,/$end_pattern/d" "$output_file"
+    else
+      sed -i "/$start_pattern/,/$end_pattern/d" "$output_file"
+    fi
+  fi
+}
+
+create_temp_file() {
+  local prefix="$1"
+  mktemp "${TEMP_DIR}/${prefix}.XXXXXX"
+}
+
+cleanup() {
+  # Make sure errors here don't affect the script's final exit code
+  set +e
+  if [[ -n "$temp_output_file" && -f "$temp_output_file" ]]; then rm -f "$temp_output_file"; fi
+  if [[ -n "$accounts_file" && -f "$accounts_file" ]]; then rm -f "$accounts_file"; fi
+  if [[ -n "$roles_file" && -f "$roles_file" ]]; then rm -f "$roles_file"; fi
+  :
+}
+
+configure() {
+  : "${profile_file:?set profile_file path first}"
+  [[ -f "$profile_file" ]] || : >"$profile_file"
+
+  if [[ -n "${configure_from_file:-}" ]]; then
+    # -------- IMPORT-ALL MODE --------
+    local src="$configure_from_file"
+    [[ -f "$src" ]] || { echo "❌ Source file not found: $src"; return 1; }
+
+    while read -r key; do
+      [[ -n "$key" ]] || continue
+
+      local prefix start_url sso_region
+      prefix=$(yq -r ".\"$key\".prefix // \"\"" "$src")
+      start_url=$(yq -r ".\"$key\".start_url // \"\"" "$src")
+      sso_region=$(yq -r ".\"$key\".sso_region // \"\"" "$src")
+
+      if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" ]]; then
+        echo "❌ '$key' missing required fields (prefix/start_url/sso_region). Import aborted.";
+        return 1
+      fi
+
+      if yq -e ". | has(\"$key\")" "$profile_file" >/dev/null 2>&1; then
+        if [[ -n "${configure_force_overwrite:-}" ]]; then
+          :
+        elif [[ -n "${configure_non_interactive:-}" ]]; then
+          echo "❌ Session '$key' already exists. Use --force in non-interactive mode."; return 1
+        else
+          read -r -p "Session '$key' exists in target. Overwrite? (y/N): " ans
+          [[ "$ans" =~ ^[Yy]$ ]] || { echo "↩️  Skipping '$key'."; continue; }
+        fi
+      fi
+
+      if [[ -n "${dry_run:-}" ]]; then
+        echo "[DRY-RUN] Would set '$key' to prefix=$prefix, start_url=$start_url, sso_region=$sso_region"
+      else
+        yq -i ".\"$key\" = {\"prefix\": \"$prefix\", \"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
+          "$profile_file"
+      fi
+      echo "✅ Imported '$key'"
+    done < <(yq -r 'keys | .[]' "$src")
+
+    echo "🎉 Import complete into $profile_file"
+    return 0
+  fi
+
+  # -------- INTERACTIVE SINGLE-ENTRY MODE --------
+  while true; do
+    read -r -p "Enter org name (letters/numbers/_/-, no spaces): " sso_session
+    [[ $sso_session =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] && break
+    echo "❌ Invalid name. Try again."
+  done
+
+  if yq -e ". | has(\"$sso_session\")" "$profile_file" >/dev/null 2>&1; then
+    if [[ -n "${configure_force_overwrite:-}" ]]; then
+      echo "⚠️  '$sso_session' exists and will be overwritten (force mode)."
+    else
+      read -r -p "Session exists. Overwrite? (y/N): " choice
+      [[ "$choice" =~ ^[Yy]$ ]] || { echo "❎ Skipping update for '$sso_session'."; return 0; }
+    fi
+  fi
+
+  read -r -p "SSO region (e.g., us-east-1): " sso_region
+  read -r -p "Start URL from AWS: " start_url
+  read -r -p "Prefix for profiles: " prefix
+
+  if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" ]]; then
+    echo "❌ All fields are required."; return 1
+  fi
+
+  if [[ -n "${dry_run:-}" ]]; then
+    echo "[DRY-RUN] Would set '$sso_session' to prefix=$prefix, start_url=$start_url, sso_region=$sso_region"
+  else
+    yq -i ".\"$sso_session\" = {\"prefix\": \"$prefix\", \"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
+      "$profile_file"
+  fi
+
+  echo "✅ Created/updated '$sso_session' in $profile_file"
+}
+
+# Sanitize for profile names: only letters, digits, ., _, -
+sanitize() { sed -E 's/[^A-Za-z0-9._-]+/-/g' <<<"$1"; }
+
+# Main function to generate AWS profiles
+generate() {
+  key=$1
+  set_start_and_end_lines "$key"
+
+  # Determine sessions source file
+  local sessions_src
+  if [[ -n "${configure_from_file:-}" ]]; then
+    sessions_src="$configure_from_file"
+  else
+    sessions_src="$profile_file"
+  fi
+
+  # Create temporary files
+  temp_output_file="$(create_temp_file "aws-config-temp")"
+  accounts_file="$(create_temp_file "aws-sso-accounts")"
+
+  # Seed temp file with current config (or empty)
+  if [[ -f "$output_file" ]]; then
+    cp "$output_file" "$temp_output_file"
+  else
+    : >"$temp_output_file"
+  fi
+
+  # Check for existing managed block and apply overwrite policy
+  start_pattern=$(escape_for_sed "$start_line")
+  end_pattern=$(escape_for_sed "$end_line")
+  if grep -qF "$start_line" "$temp_output_file"; then
+    if [[ -n "${configure_force_overwrite:-}" ]]; then
+      : # proceed to delete silently
+    elif [[ -n "${configure_non_interactive:-}" ]]; then
+      echo "❌ Managed block for '$key' already exists in $output_file. Use --force in non-interactive mode."; exit 1
+    else
+      read -r -p "Profiles for '$key' already exist in $output_file. Overwrite? (y/N): " ans
+      if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+        echo "↩️  Skipping generation for '$key'."
+        return 0
+      fi
+    fi
+    if [[ "$(uname)" == "Darwin" ]]; then
+      sed -i '' "/$start_pattern/,/$end_pattern/d" "$temp_output_file"
+    else
+      sed -i "/$start_pattern/,/$end_pattern/d" "$temp_output_file"
+    fi
+  fi
+
+  # Pull values from YAML (no eval)
+  if [[ -f "$sessions_src" ]]; then
+    prefix=$(yq -r ".\"$key\".prefix" "$sessions_src")
+    start_url=$(yq -r ".\"$key\".start_url" "$sessions_src")
+    sso_region=$(yq -r ".\"$key\".sso_region" "$sessions_src")
+    if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" || "$prefix" == "null" || "$start_url" == "null" || "$sso_region" == "null" ]]; then
+      echo "Missing fields in $sessions_src for key '$key'."
+      exit 1
+    fi
+  else
+    echo "No SSO session config file found: $sessions_src"
+    exit 1
+  fi
+
+  # Validate AWS CLI version
+  if [[ $(aws --version 2>&1) == aws-cli/1* ]]; then
+    echo "ERROR: $0 requires AWS CLI v2 or higher"
+    exit 1
+  fi
+
+  # =============================================
+  # SSO Authentication
+  # =============================================
+  echo
+  echo -n "Registering client... "
+  out_json=$(command aws sso-oidc register-client \
+    --client-name "$TOOL_NAME" \
+    --client-type 'public' \
+    --region "$sso_region" \
+    --output json 2>/dev/null) || { echo "Failed"; exit 1; }
+  echo "Succeeded"
+
+  client_id=$(jq -r '.clientId' <<<"$out_json")
+  client_secret=$(jq -r '.clientSecret' <<<"$out_json")
+
+  echo -n "Starting device authorization... "
+  auth_output=$(aws sso-oidc start-device-authorization \
+    --start-url "$start_url" \
+    --region "$sso_region" \
+    --client-id "$client_id" \
+    --client-secret "$client_secret" \
+    --output json)
+  echo "OK"
+
+  verification_uri=$(jq -r '.verificationUriComplete' <<<"$auth_output")
+  device_code=$(jq -r '.deviceCode' <<<"$auth_output")
+  interval=$(jq -r '.interval' <<<"$auth_output")
+  expires_in=$(jq -r '.expiresIn' <<<"$auth_output")
+
+  echo "Opening default browser for authentication..."
+  case "$OSTYPE" in
+    darwin*)  open "$verification_uri" ;;
+    linux*)   xdg-open "$verification_uri" ;;
+    msys*|cygwin*|win32*)  cmd.exe /c start "" "$verification_uri" ;;
+    *)        echo "Please open the URL manually: $verification_uri" ;;
+  esac
+
+  # Poll for token
+  start_time=$(date +%s)
+  echo "Waiting for user to complete authentication..."
+
+  while true; do
+    now=$(date +%s)
+    elapsed=$((now - start_time))
+    if (( elapsed > expires_in )); then
+      echo "Authorization expired."
+      exit 1
+    fi
+
+    resp_json=$(aws sso-oidc create-token \
+      --region "$sso_region" \
+      --client-id "$client_id" \
+      --client-secret "$client_secret" \
+      --grant-type "urn:ietf:params:oauth:grant-type:device_code" \
+      --device-code "$device_code" \
+      --output json 2>&1) && break
+
+    # Keep polling?
+    if grep -q "AuthorizationPendingException" <<<"$resp_json"; then
+      sleep "$interval"
+    elif grep -q "SlowDownException" <<<"$resp_json"; then
+      sleep $((interval + 2))
+    else
+      echo "Failed to get token: $resp_json"
+      exit 1
+    fi
+  done
+
+  echo "Successfully authenticated!"
+  token=$(jq -r '.accessToken' <<<"$resp_json")
+
+  # Get accounts
+  echo "Retrieving accounts..."
+  aws sso list-accounts \
+    --access-token "$token" \
+    --page-size "$ACCOUNT_PAGE_SIZE" \
+    --region "$sso_region" \
+    --output text > "$accounts_file" || { echo "Failed to retrieve accounts."; exit 1; }
+
+  # Header
+  echo "Creating SSO session $prefix..."
+  if [[ -n "${dry_run:-}" ]]; then
+    echo "[DRY-RUN] Would append to config:"
+    echo
+    echo "$start_line"
+    echo
+    echo "[sso-session $prefix]"
+    echo "sso_region = $sso_region"
+    echo "sso_start_url = $start_url"
+    echo "sso_registration_scopes = sso:account:access"
+  else
+    {
+      echo "$start_line"
+      echo
+      echo "[sso-session $prefix]"
+      echo "sso_region = $sso_region"
+      echo "sso_start_url = $start_url"
+      echo "sso_registration_scopes = sso:account:access"
+    } >> "$temp_output_file"
+  fi
+
+  # Process each account
+  while IFS=$'\t' read -r _ acctnum acctname _; do
+    echo "Adding roles for account $acctnum ($acctname)..."
+    roles_file="$(create_temp_file "aws-sso-roles")"
+
+    aws sso list-account-roles \
+      --account-id "$acctnum" \
+      --access-token "$token" \
+      --page-size "$ROLE_PAGE_SIZE" \
+      --region "$sso_region" \
+      --output text > "$roles_file" || { echo "Failed to retrieve roles."; exit 1; }
+
+    # Process each role
+    while IFS=$'\t' read -r _ _ rolename; do
+      safe_acct=$(sanitize "$acctname")
+      safe_role=$(sanitize "$rolename")
+      profile_name="$prefix-$safe_acct-$safe_role"
+      echo "Creating $profile_name..."
+      if [[ -n "${dry_run:-}" ]]; then
+        echo "[DRY-RUN] Would append profile:"
+        echo
+        echo "[profile $profile_name]"
+        echo "sso_session = $prefix"
+        echo "sso_account_id = $acctnum"
+        echo "sso_role_name = $rolename"
+      else
+        {
+          echo
+          echo "[profile $profile_name]"
+          echo "sso_session = $prefix"
+          echo "sso_account_id = $acctnum"
+          echo "sso_role_name = $rolename"
+        } >> "$temp_output_file"
+      fi
+    done < "$roles_file"
+
+    rm -f "$roles_file"; roles_file=""
+  done < "$accounts_file"
+
+  if [[ -n "${dry_run:-}" ]]; then
+    echo
+    echo "$end_line"
+  else
+    {
+      echo
+      echo "$end_line"
+    } >> "$temp_output_file"
+  fi
+
+  # Atomically replace the original config
+  if [[ -n "${dry_run:-}" ]]; then
+    echo "Writing configuration to $output_file..."
+    echo "[DRY-RUN] Would write configuration to $output_file"
+    rm -f "$temp_output_file"
+    temp_output_file=""
+  else
+    echo "Writing configuration to $output_file..."
+    mv "$temp_output_file" "$output_file"
+    temp_output_file=""
+  fi
+
+  echo "Configuration complete!"
+  return 0
+}
+
+trap cleanup EXIT INT TERM
+
+case "${1:-}" in
+  configure)
+    extract_flags "$@"
+    configure
+    exit 0
+    ;;
+  generate)
+    extract_flags "$@"
+    if [[ -n "${sso_session:-}" ]]; then
+      generate "$sso_session"
+    else
+      # iterate all sessions from effective source
+      while read -r item; do
+        [[ -n "$item" ]] && generate "$item"
+      done < <(list)
+    fi
+    exit 0
+    ;;
+  clear)
+    extract_flags "$@"
+    if [[ -n "${sso_session:-}" ]]; then
+      clear "$sso_session"
+    else
+      while read -r item; do
+        [[ -n "$item" ]] && clear "$item"
+      done < <(list)
+    fi
+    exit 0
+    ;;
+  list)
+    extract_flags "$@"
+    list
+    exit 0
+    ;;
+  help|-h|--help)
+    show_help "$0"
+    exit 0
+    ;;
+  *)
+    echo "Invalid command: ${1:-<none>}"
+    show_help "$0"
+    exit 1
+    ;;
+esac
