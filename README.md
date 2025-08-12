@@ -66,9 +66,14 @@ OtherCompany:
 
 ## Examples
 
-### Import all sessions
+### Import all sessions from a file
 ```bash
 aws-sso-profile configure --import-file ./sessions.yaml
+```
+
+### Generate all sessions to you AWS config
+```bash
+aws-sso-profile generate
 ```
 
 ### Preview changes without applying
