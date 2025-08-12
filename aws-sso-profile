@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 TOOL_NAME="AWS-SSO-Profile-Manager"
-TOOL_VERSION="0.1.1"
+TOOL_VERSION="0.1.2"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "aws-sso-profile ${TOOL_VERSION}"
@@ -71,8 +71,8 @@ list() {
 }
 
 set_start_and_end_lines() {
-  start_line="### [START] configure-profiles.sh for $1"
-  end_line="### [END] configure-profiles.sh for $1"
+  start_line="### [START] $TOOL_NAME for $1"
+  end_line="### [END] $TOOL_NAME for $1"
 }
 
 # Escape special characters for use in sed patterns
