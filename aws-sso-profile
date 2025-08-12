@@ -148,6 +148,12 @@ cleanup() {
   :
 }
 
+on_interrupt() {
+  echo
+  echo "❌ Aborted by user (Ctrl+C)"
+  exit 130
+}
+
 configure() {
   : "${profile_file:?set profile_file path first}"
   [[ -f "$profile_file" ]] || : >"$profile_file"
@@ -195,6 +201,10 @@ configure() {
   fi
 
   # -------- INTERACTIVE SINGLE-ENTRY MODE --------
+  # If we're in interactive mode, make Ctrl+C abort cleanly.
+  if [[ -z "${configure_non_interactive:-}" && -z "${configure_from_file:-}" ]]; then
+    trap 'on_interrupt' INT
+  fi
   while true; do
     read -r -p "Enter org name (letters/numbers/_/-, no spaces): " sso_session
     [[ $sso_session =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] && break
@@ -463,7 +473,7 @@ generate() {
   return 0
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT TERM
 
 case "${1:-}" in
   configure)
