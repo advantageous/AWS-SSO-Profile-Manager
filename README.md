@@ -32,7 +32,8 @@ brew upgrade aws-sso-profile
 ## Usage
 
 ```bash
-aws-sso-profile configure --import-file sessions.yaml
+aws-sso-profile configure  #Configure your sso session
+aws-sso-profile generate   #Perform sso login and generate all profiles
 ```
 
 ### Common Options
