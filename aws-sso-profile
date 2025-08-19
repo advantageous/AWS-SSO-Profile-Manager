@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 TOOL_NAME="AWS-SSO-Profile-Manager"
-TOOL_VERSION="0.1.2"
+TOOL_VERSION="0.2.0"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "aws-sso-profile ${TOOL_VERSION}"
