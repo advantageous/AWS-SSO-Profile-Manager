@@ -166,13 +166,12 @@ configure() {
     while read -r key; do
       [[ -n "$key" ]] || continue
 
-      local prefix start_url sso_region
-      prefix=$(yq -r ".\"$key\".prefix // \"\"" "$src")
+      local start_url sso_region
       start_url=$(yq -r ".\"$key\".start_url // \"\"" "$src")
       sso_region=$(yq -r ".\"$key\".sso_region // \"\"" "$src")
 
-      if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" ]]; then
-        echo "❌ '$key' missing required fields (prefix/start_url/sso_region). Import aborted.";
+      if [[ -z "$start_url" || -z "$sso_region" ]]; then
+        echo "❌ '$key' missing required fields (start_url/sso_region). Import aborted.";
         return 1
       fi
 
@@ -188,9 +187,9 @@ configure() {
       fi
 
       if [[ -n "${dry_run:-}" ]]; then
-        echo "[DRY-RUN] Would set '$key' to prefix=$prefix, start_url=$start_url, sso_region=$sso_region"
+        echo "[DRY-RUN] Would set '$key' to start_url=$start_url, sso_region=$sso_region"
       else
-        yq -i ".\"$key\" = {\"prefix\": \"$prefix\", \"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
+        yq -i ".\"$key\" = {\"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
           "$profile_file"
       fi
       echo "✅ Imported '$key'"
@@ -222,16 +221,15 @@ configure() {
 
   read -r -p "SSO region (e.g., us-east-1): " sso_region
   read -r -p "Start URL from AWS: " start_url
-  read -r -p "Prefix for profiles: " prefix
 
-  if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" ]]; then
+  if [[ -z "$start_url" || -z "$sso_region" ]]; then
     echo "❌ All fields are required."; return 1
   fi
 
   if [[ -n "${dry_run:-}" ]]; then
-    echo "[DRY-RUN] Would set '$sso_session' to prefix=$prefix, start_url=$start_url, sso_region=$sso_region"
+    echo "[DRY-RUN] Would set '$sso_session' to start_url=$start_url, sso_region=$sso_region"
   else
-    yq -i ".\"$sso_session\" = {\"prefix\": \"$prefix\", \"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
+    yq -i ".\"$sso_session\" = {\"start_url\": \"$start_url\", \"sso_region\": \"$sso_region\"}" \
       "$profile_file"
   fi
 
@@ -289,10 +287,9 @@ generate() {
 
   # Pull values from YAML (no eval)
   if [[ -f "$sessions_src" ]]; then
-    prefix=$(yq -r ".\"$key\".prefix" "$sessions_src")
     start_url=$(yq -r ".\"$key\".start_url" "$sessions_src")
     sso_region=$(yq -r ".\"$key\".sso_region" "$sessions_src")
-    if [[ -z "$prefix" || -z "$start_url" || -z "$sso_region" || "$prefix" == "null" || "$start_url" == "null" || "$sso_region" == "null" ]]; then
+    if [[ -z "$start_url" || -z "$sso_region" || "$start_url" == "null" || "$sso_region" == "null" ]]; then
       echo "Missing fields in $sessions_src for key '$key'."
       exit 1
     fi
@@ -387,13 +384,13 @@ generate() {
     --output text > "$accounts_file" || { echo "Failed to retrieve accounts."; exit 1; }
 
   # Header
-  echo "Creating SSO session $prefix..."
+  echo "Creating SSO session $key..."
   if [[ -n "${dry_run:-}" ]]; then
     echo "[DRY-RUN] Would append to config:"
     echo
     echo "$start_line"
     echo
-    echo "[sso-session $prefix]"
+    echo "[sso-session $key]"
     echo "sso_region = $sso_region"
     echo "sso_start_url = $start_url"
     echo "sso_registration_scopes = sso:account:access"
@@ -401,7 +398,7 @@ generate() {
     {
       echo "$start_line"
       echo
-      echo "[sso-session $prefix]"
+      echo "[sso-session $key]"
       echo "sso_region = $sso_region"
       echo "sso_start_url = $start_url"
       echo "sso_registration_scopes = sso:account:access"
@@ -424,20 +421,20 @@ generate() {
     while IFS=$'\t' read -r _ _ rolename; do
       safe_acct=$(sanitize "$acctname")
       safe_role=$(sanitize "$rolename")
-      profile_name="$prefix-$safe_acct-$safe_role"
+      profile_name="$key-$safe_acct-$safe_role"
       echo "Creating $profile_name..."
       if [[ -n "${dry_run:-}" ]]; then
         echo "[DRY-RUN] Would append profile:"
         echo
         echo "[profile $profile_name]"
-        echo "sso_session = $prefix"
+        echo "sso_session = $key"
         echo "sso_account_id = $acctnum"
         echo "sso_role_name = $rolename"
       else
         {
           echo
           echo "[profile $profile_name]"
-          echo "sso_session = $prefix"
+          echo "sso_session = $key"
           echo "sso_account_id = $acctnum"
           echo "sso_role_name = $rolename"
         } >> "$temp_output_file"

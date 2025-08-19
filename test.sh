@@ -29,18 +29,15 @@ BAD_IMPORT="$SANDBOX/bad-import.yaml"
 # Seed files
 cat >"$GOOD_IMPORT" <<'YAML'
 OtherCompany:
-  prefix: ev
   start_url: https://d-1067f984aa.awsapps.com/start
   sso_region: us-east-1
 Advantageous:
-  prefix: adv
   start_url: https://advantageous.awsapps.com/start
   sso_region: eu-central-1
 YAML
 
 cat >"$BAD_IMPORT" <<'YAML'
 BrokenCo:
-  prefix: bc
   # start_url missing on purpose
   sso_region: us-west-2
 YAML
@@ -128,9 +125,9 @@ expect_rc 0 "generate-one-dry-run" \
 echo "### Test 7: generate overwrite policy: conflict without --force -> error"
 # Simulate existing managed block for Advantageous
 {
-  echo "### [START] configure-profiles.sh for Advantageous"
-  echo "[sso-session adv]"
-  echo "### [END] configure-profiles.sh for Advantageous"
+  echo "### [START] AWS-SSO-Profile-Manager for Advantageous"
+  echo "[sso-session Advantageous]"
+  echo "### [END] AWS-SSO-Profile-Manager for Advantageous"
 } >>"$AWS_CFG"
 
 expect_rc 1 "generate-conflict-no-force" \

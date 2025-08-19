@@ -53,12 +53,10 @@ aws-sso-profile generate   #Perform sso login and generate all profiles
 
 ```yaml
 Advantageous:
-  prefix: adv
   start_url: https://advantageous.awsapps.com/start
   sso_region: eu-central-1
 
 OtherCompany:
-  prefix: cp
   start_url: https://d-1234567890.awsapps.com/start
   sso_region: us-east-1
 ```
