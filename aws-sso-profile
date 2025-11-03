@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 TOOL_NAME="AWS-SSO-Profile-Manager"
-TOOL_VERSION="0.3.2"
+TOOL_VERSION="0.3.3"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "aws-sso-profile ${TOOL_VERSION}"
@@ -12,6 +12,17 @@ fi
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help
   exit 0
+fi
+
+# Verify dependencies are installed.
+command -v yq >/dev/null 2>&1 || { echo "ERROR: yq is required but not installed."; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required but not installed."; exit 1; }
+command -v aws >/dev/null 2>&1 || { echo "ERROR: awscli v2 is required but not installed."; exit 1; }
+
+# Validate AWS CLI version
+if [[ $(aws --version 2>&1) == aws-cli/1* ]]; then
+  echo "ERROR: AWS CLI v2 or higher is required (found v1)"
+  exit 1
 fi
 
 # XDG defaults
@@ -177,6 +188,17 @@ configure() {
         return 1
       fi
 
+      # Add validation
+      if ! [[ $sso_region =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]; then
+        echo "❌ '$key' has invalid region format '$sso_region'. Use format like: us-east-1"
+        return 1
+      fi
+
+      if ! [[ $start_url =~ ^https://(([a-z0-9-]+\.awsapps\.com)|(start\.[a-z0-9-]+\.home\.awsapps\.cn))/ ]]; then
+        echo "❌ '$key' has invalid start URL format: $start_url"
+        return 1
+      fi
+
       if yq -e ". | has(\"$key\")" "$profile_file" >/dev/null 2>&1; then
         if [[ -n "${configure_force_overwrite:-}" ]]; then
           :
@@ -222,10 +244,17 @@ configure() {
   fi
 
   read -r -p "SSO region (e.g., us-east-1): " sso_region
-  read -r -p "Start URL from AWS: " start_url
+  if ! [[ $sso_region =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]; then
+    echo "❌ Invalid region format. Use format like: us-east-1";
+    return 1
+  fi
 
-  if [[ -z "$start_url" || -z "$sso_region" ]]; then
-    echo "❌ All fields are required."; return 1
+  read -r -p "Start URL from AWS: " start_url
+  # Validate start_url format (supports standard and China regions)
+  if ! [[ $start_url =~ ^https://(([a-z0-9-]+\.awsapps\.com)|(start\.[a-z0-9-]+\.home\.awsapps\.cn))/ ]]; then
+    echo "❌ Invalid start URL format."
+    echo "   Expected: https://....awsapps.com/start or https://start.....awsapps.cn/directory/..."
+    return 1
   fi
 
   if [[ -n "${dry_run:-}" ]]; then
@@ -338,9 +367,9 @@ generate() {
 
   echo "Opening default browser for authentication..."
   case "$OSTYPE" in
-    darwin*)  open "$verification_uri" ;;
-    linux*)   xdg-open "$verification_uri" ;;
-    msys*|cygwin*|win32*)  cmd.exe /c start "" "$verification_uri" ;;
+    darwin*)  open "$verification_uri" 2>/dev/null || echo "Please open: $verification_uri" ;;
+    linux*)   xdg-open "$verification_uri" 2>/dev/null || echo "Please open: $verification_uri" ;;
+    msys*|cygwin*|win32*)  cmd.exe /c start "" "$verification_uri" 2>/dev/null || echo "Please open: $verification_uri" ;;
     *)        echo "Please open the URL manually: $verification_uri" ;;
   esac
 
@@ -412,6 +441,7 @@ generate() {
 
     # Process each role - always write to temp file
     while IFS=$'\t' read -r _ _ rolename; do
+      [[ -n "$rolename" ]] || { echo "Warning: Empty role name, skipping..."; continue; }
       safe_acct=$(sanitize "$acctname")
       safe_role=$(sanitize "$rolename")
       profile_name="$key-$safe_acct-$safe_role"
@@ -493,12 +523,12 @@ case "${1:-}" in
     exit 0
     ;;
   help|-h|--help)
-    show_help "$0"
+    show_help
     exit 0
     ;;
   *)
     echo "Invalid command: ${1:-<none>}"
-    show_help "$0"
+    show_help
     exit 1
     ;;
 esac
