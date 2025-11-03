@@ -9,10 +9,6 @@ if [[ "${1:-}" == "--version" ]]; then
   echo "aws-sso-profile ${TOOL_VERSION}"
   exit 0
 fi
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  show_help
-  exit 0
-fi
 
 # Verify dependencies are installed.
 command -v yq >/dev/null 2>&1 || { echo "ERROR: yq is required but not installed."; exit 1; }
@@ -78,7 +74,31 @@ list() {
     src="$profile_file"
   fi
   [[ -f "$src" ]] || { echo "No sessions."; return 0; }
-  yq eval 'keys | .[]' "$src"
+
+  # Check if file is empty or contains only whitespace
+  if [[ ! -s "$src" ]]; then
+    echo "No sessions."
+    return 0
+  fi
+
+  # Check if file contains non-whitespace content
+  if ! grep -q '[^[:space:]]' "$src" 2>/dev/null; then
+    echo "No sessions."
+    return 0
+  fi
+
+  # Check if yq can parse the file and it has keys
+  local keys
+  keys=$(yq eval 'keys | .[]' "$src" 2>/dev/null) || { echo "No sessions."; return 0; }
+
+  # Output keys if any exist
+  if [[ -n "$keys" ]]; then
+    echo "$keys"
+  else
+    echo "No sessions."
+  fi
+
+  return 0
 }
 
 set_start_and_end_lines() {
@@ -176,6 +196,25 @@ configure() {
     local src="$configure_from_file"
     [[ -f "$src" ]] || { echo "❌ Source file not found: $src"; return 1; }
 
+    # Check if file is empty or contains only whitespace
+    if [[ ! -s "$src" ]] || ! grep -q '[^[:space:]]' "$src"; then
+      echo "⚠️  Source file is empty. Nothing to import."
+      return 0
+    fi
+
+    # Try to get keys, handle parse errors
+    local keys
+    keys=$(yq -r 'keys | .[]' "$src" 2>/dev/null) || {
+      echo "❌ Failed to parse YAML file: $src"
+      return 1
+    }
+
+    # Check if we got any keys
+    if [[ -z "$keys" ]]; then
+      echo "⚠️  No sessions found in source file."
+      return 0
+    fi
+
     while read -r key; do
       [[ -n "$key" ]] || continue
 
@@ -217,7 +256,7 @@ configure() {
           "$profile_file"
       fi
       echo "✅ Imported '$key'"
-    done < <(yq -r 'keys | .[]' "$src")
+    done <<< "$keys"
 
     echo "🎉 Import complete into $profile_file"
     return 0
