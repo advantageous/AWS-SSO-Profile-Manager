@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 TOOL_NAME="AWS-SSO-Profile-Manager"
-TOOL_VERSION="0.3.1"
+TOOL_VERSION="0.3.2"
 
 if [[ "${1:-}" == "--version" ]]; then
   echo "aws-sso-profile ${TOOL_VERSION}"
@@ -431,7 +431,7 @@ generate() {
         echo "sso_session = $key"
         echo "sso_account_id = $acctnum"
         echo "sso_role_name = $rolename"
-        if [[ -n "$profile_region" ]]; then
+        if [[ -n "$profile_region" && "$profile_region" != "null" ]]; then
           echo "region = $profile_region"
         fi
       else
@@ -441,7 +441,7 @@ generate() {
           echo "sso_session = $key"
           echo "sso_account_id = $acctnum"
           echo "sso_role_name = $rolename"
-          if [[ -n "$profile_region" ]]; then
+          if [[ -n "$profile_region" && "$profile_region" != "null" ]]; then
             echo "region = $profile_region"
           fi
         } >> "$temp_output_file"
