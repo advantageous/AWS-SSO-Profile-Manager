@@ -289,6 +289,7 @@ generate() {
   if [[ -f "$sessions_src" ]]; then
     start_url=$(yq -r ".\"$key\".start_url" "$sessions_src")
     sso_region=$(yq -r ".\"$key\".sso_region" "$sessions_src")
+    default_region=$(yq -r ".\"$key\".default_region" "$sessions_src")
     if [[ -z "$start_url" || -z "$sso_region" || "$start_url" == "null" || "$sso_region" == "null" ]]; then
       echo "Missing fields in $sessions_src for key '$key'."
       exit 1
@@ -430,6 +431,9 @@ generate() {
         echo "sso_session = $key"
         echo "sso_account_id = $acctnum"
         echo "sso_role_name = $rolename"
+        if [[ -n "$default_region" ]]; then
+          echo "default_region = $default_region"
+        fi
       else
         {
           echo
@@ -437,6 +441,9 @@ generate() {
           echo "sso_session = $key"
           echo "sso_account_id = $acctnum"
           echo "sso_role_name = $rolename"
+          if [[ -n "$default_region" ]]; then
+            echo "default_region = $default_region"
+          fi
         } >> "$temp_output_file"
       fi
     done < "$roles_file"
