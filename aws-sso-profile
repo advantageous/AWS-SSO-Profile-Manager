@@ -139,6 +139,7 @@ create_temp_file() {
   mktemp "${TEMP_DIR}/${prefix}.XXXXXX"
 }
 
+# shellcheck disable=SC2317
 cleanup() {
   # Make sure errors here don't affect the script's final exit code
   set +e
@@ -148,6 +149,7 @@ cleanup() {
   :
 }
 
+# shellcheck disable=SC2317
 on_interrupt() {
   echo
   echo "❌ Aborted by user (Ctrl+C)"
@@ -386,8 +388,7 @@ generate() {
 
   # Header
   echo "Creating SSO session $key..."
-  if [[ -n "${dry_run:-}" ]]; then
-    echo "[DRY-RUN] Would append to config:"
+  {
     echo
     echo "$start_line"
     echo
@@ -395,16 +396,7 @@ generate() {
     echo "sso_region = $sso_region"
     echo "sso_start_url = $start_url"
     echo "sso_registration_scopes = sso:account:access"
-  else
-    {
-      echo "$start_line"
-      echo
-      echo "[sso-session $key]"
-      echo "sso_region = $sso_region"
-      echo "sso_start_url = $start_url"
-      echo "sso_registration_scopes = sso:account:access"
-    } >> "$temp_output_file"
-  fi
+  } >> "$temp_output_file"
 
   # Process each account
   while IFS=$'\t' read -r _ acctnum acctname _; do
@@ -418,14 +410,13 @@ generate() {
       --region "$sso_region" \
       --output text > "$roles_file" || { echo "Failed to retrieve roles."; exit 1; }
 
-    # Process each role
+    # Process each role - always write to temp file
     while IFS=$'\t' read -r _ _ rolename; do
       safe_acct=$(sanitize "$acctname")
       safe_role=$(sanitize "$rolename")
       profile_name="$key-$safe_acct-$safe_role"
       echo "Creating $profile_name..."
-      if [[ -n "${dry_run:-}" ]]; then
-        echo "[DRY-RUN] Would append profile:"
+      {
         echo
         echo "[profile $profile_name]"
         echo "sso_session = $key"
@@ -434,37 +425,25 @@ generate() {
         if [[ -n "$profile_region" && "$profile_region" != "null" ]]; then
           echo "region = $profile_region"
         fi
-      else
-        {
-          echo
-          echo "[profile $profile_name]"
-          echo "sso_session = $key"
-          echo "sso_account_id = $acctnum"
-          echo "sso_role_name = $rolename"
-          if [[ -n "$profile_region" && "$profile_region" != "null" ]]; then
-            echo "region = $profile_region"
-          fi
-        } >> "$temp_output_file"
-      fi
+      } >> "$temp_output_file"
     done < "$roles_file"
 
     rm -f "$roles_file"; roles_file=""
   done < "$accounts_file"
 
-  if [[ -n "${dry_run:-}" ]]; then
+  # Footer - always write to temp file
+  {
     echo
     echo "$end_line"
-  else
-    {
-      echo
-      echo "$end_line"
-    } >> "$temp_output_file"
-  fi
+  } >> "$temp_output_file"
 
-  # Atomically replace the original config
+  # Handle dry-run: show the temp file content instead of writing
   if [[ -n "${dry_run:-}" ]]; then
-    echo "Writing configuration to $output_file..."
-    echo "[DRY-RUN] Would write configuration to $output_file"
+    echo
+    echo "[DRY-RUN] Would write the following to $output_file:"
+    echo "----------------------------------------"
+    cat "$temp_output_file"
+    echo "----------------------------------------"
     rm -f "$temp_output_file"
     temp_output_file=""
   else
