@@ -33,10 +33,10 @@ MIXED_VALID="$SANDBOX/mixed-valid.yaml"
 
 # Seed files
 cat >"$GOOD_IMPORT" <<'YAML'
-OtherCompany:
+ev:
   start_url: https://d-1067f984aa.awsapps.com/start
   sso_region: us-east-1
-Advantageous:
+adv:
   start_url: https://advantageous.awsapps.com/start
   sso_region: eu-central-1
 YAML
@@ -250,7 +250,7 @@ expect_rc 0 "list-from-import" \
   --import-file "$GOOD_IMPORT"
 
 echo "### Test 17: list shows correct session names"
-expect_output_contains "Advantageous" "list-contains-name" \
+expect_output_contains "adv" "list-contains-name" \
   "$TOOL" list \
   --config-file "$SESS_STORE" \
   --import-file "$GOOD_IMPORT"
@@ -270,15 +270,15 @@ expect_rc 0 "generate-one-dry-run" \
   --config-file "$SESS_STORE" \
   --output-file "$AWS_CFG" \
   --import-file "$GOOD_IMPORT" \
-  --sso-session Advantageous \
+  --sso-session adv \
   --dry-run --non-interactive --force
 
 echo "### Test 20: generate overwrite policy: conflict without --force -> error"
 # Simulate existing managed block for Advantageous
 {
-  echo "### [START] AWS-SSO-Profile-Manager for Advantageous"
-  echo "[sso-session Advantageous]"
-  echo "### [END] AWS-SSO-Profile-Manager for Advantageous"
+  echo "### [START] AWS-SSO-Profile-Manager for adv"
+  echo "[sso-session adv]"
+  echo "### [END] AWS-SSO-Profile-Manager for adv"
 } >>"$AWS_CFG"
 
 expect_rc 1 "generate-conflict-no-force" \
@@ -286,7 +286,7 @@ expect_rc 1 "generate-conflict-no-force" \
   --config-file "$SESS_STORE" \
   --output-file "$AWS_CFG" \
   --import-file "$GOOD_IMPORT" \
-  --sso-session Advantageous \
+  --sso-session adv \
   --dry-run --non-interactive
 
 echo "### Test 21: generate overwrite policy: conflict with --force -> ok"
@@ -295,7 +295,7 @@ expect_rc 0 "generate-conflict-force" \
   --config-file "$SESS_STORE" \
   --output-file "$AWS_CFG" \
   --import-file "$GOOD_IMPORT" \
-  --sso-session Advantageous \
+  --sso-session adv \
   --dry-run --non-interactive --force
 
 echo
