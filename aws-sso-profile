@@ -166,7 +166,7 @@ list() {
 
   # Check if yq can parse the file and it has keys
   local keys
-  keys=$(yq eval 'keys | .[]' "$src" 2>/dev/null) || { echo "No sessions."; return 0; }
+  keys=$(yq -r 'keys | .[]' "$src" 2>/dev/null) || { echo "No sessions."; return 0; }
 
   # Output keys if any exist
   if [[ -n "$keys" ]]; then
@@ -445,9 +445,9 @@ generate() {
 
   # Pull values from YAML (no eval)
   if [[ -f "$sessions_src" ]]; then
-    start_url=$(yq -r ".\"$key\".start_url" "$sessions_src")
-    sso_region=$(yq -r ".\"$key\".sso_region" "$sessions_src")
-    profile_region=$(yq -r ".\"$key\".region" "$sessions_src")
+    start_url=$(yq -r ".[\"$key\"].start_url" "$sessions_src")
+    sso_region=$(yq -r ".[\"$key\"].sso_region" "$sessions_src")
+    profile_region=$(yq -r ".[\"$key\"].region" "$sessions_src")
     if [[ -z "$start_url" || -z "$sso_region" || "$start_url" == "null" || "$sso_region" == "null" ]]; then
       echo "Missing fields in $sessions_src for key '$key'."
       exit 1
